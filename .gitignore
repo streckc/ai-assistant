@@ -97,3 +97,5 @@ target/
 
 # exclude lancedb from source control by default
 lancedb/
+
+requests/

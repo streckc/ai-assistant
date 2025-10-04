@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from nylas import Client
+from nylas.models.auth import (
+    CodeExchangeRequest,
+    URLForAuthenticationConfig,
+)
+from nylas.models.messages import ListMessagesQueryParams
 from pydantic import BaseModel
 
 # Load env variables
@@ -16,6 +21,22 @@ PORT = 5010
 
 # Session storage (in production, use a proper session store)
 sessions: Dict[str, Dict[str, Any]] = {}
+
+# get environment
+api_key = os.environ.get("NYLAS_API_KEY")
+api_uri = os.environ.get("NYLAS_API_URI")
+nylas_client_id = os.environ.get("NYLAS_CLIENT_ID")
+nylas_grant_id = os.environ.get("NYLAS_GRANT_ID")
+email = os.environ.get("EMAIL")
+if (
+    api_key is None
+    or api_uri is None
+    or email is None
+    or nylas_client_id is None
+    or nylas_grant_id is None
+):
+    print("environment is not available")
+    exit()
 
 
 @app.middleware("http")
@@ -41,9 +62,7 @@ async def session_middleware(request: Request, call_next):
 
 
 # Initialize Nylas client
-nylas = Client(
-    api_key=os.environ.get("NYLAS_API_KEY"), api_uri=os.environ.get("NYLAS_API_URI")
-)
+nylas = Client(api_key=api_key, api_uri=api_uri)
 
 
 # Models
@@ -56,7 +75,7 @@ class EmailRequest(BaseModel):
 # Dependencies
 async def get_grant_id(request: Request) -> str:
     # 1. Check for NYLAS_GRANT_ID in environment
-    env_grant_id = os.environ.get("NYLAS_GRANT_ID")
+    env_grant_id = nylas_grant_id
     if env_grant_id:
         return env_grant_id
     # 2. Otherwise, use session
@@ -68,11 +87,13 @@ async def get_grant_id(request: Request) -> str:
 
 @app.get("/oauth/exchange")
 async def authorized(code: str, request: Request):
-    exchange_request = {
-        "redirect_uri": f"http://localhost:{PORT}/oauth/exchange",
-        "code": code,
-        "client_id": os.environ.get("NYLAS_CLIENT_ID"),
-    }
+    exchange_request = CodeExchangeRequest(
+        {
+            "redirect_uri": f"http://localhost:{PORT}/oauth/exchange",
+            "code": code,
+            "client_id": nylas_client_id,
+        }
+    )
     exchange = nylas.auth.exchange_code_for_token(exchange_request)
     request.state.session["grant_id"] = exchange.grant_id
     return RedirectResponse(url="/nylas/auth")
@@ -80,14 +101,16 @@ async def authorized(code: str, request: Request):
 
 @app.get("/nylas/auth")
 async def login(request: Request):
-    env_grant_id = os.environ.get("NYLAS_GRANT_ID")
+    env_grant_id = nylas_grant_id
     if env_grant_id:
         return {"grant_id": env_grant_id, "source": "env"}
     if not request.state.session.get("grant_id"):
-        config = {
-            "client_id": os.environ.get("NYLAS_CLIENT_ID"),
-            "redirect_uri": f"http://localhost:{PORT}/oauth/exchange",
-        }
+        config = URLForAuthenticationConfig(
+            {
+                "client_id": nylas_client_id,
+                "redirect_uri": f"http://localhost:{PORT}/oauth/exchange",
+            }
+        )
         url = nylas.auth.url_for_oauth2(config)
         return RedirectResponse(url=url)
     return {"grant_id": request.state.session["grant_id"], "source": "session"}
@@ -96,7 +119,7 @@ async def login(request: Request):
 @app.get("/nylas/recent-emails")
 async def recent_emails(grant_id: str = Depends(get_grant_id)):
     try:
-        response = nylas.messages.list(grant_id, {"limit": 5})
+        response = nylas.messages.list(grant_id, ListMessagesQueryParams({"limit": 5}))
         messages = response[0]
         return [m.to_dict() for m in messages]
     except Exception as e:
@@ -113,8 +136,8 @@ async def send_email(
         body = {
             "subject": "Your Subject Here",
             "body": "Your Email Here",
-            "reply_to": [{"name": "Name", "email": os.environ.get("EMAIL")}],
-            "to": [{"name": "Name", "email": os.environ.get("EMAIL")}],
+            "reply_to": [{"name": "Name", "email": email}],
+            "to": [{"name": "Name", "email": email}],
         }
         message = nylas.messages.send(grant_id, request_body=body).data
         return message

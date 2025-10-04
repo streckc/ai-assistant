@@ -29,7 +29,7 @@ templates = Jinja2Templates(directory="templates")
 @app.api_route("/events", methods=["GET", "POST"])
 async def webhook(
     request: Request,
-    event: WebhookEvent = None,
+    event: WebhookEvent | None = None,
     x_nylas_signature: Optional[str] = Header(None),
 ):
     if request.method == "GET":
@@ -42,13 +42,21 @@ async def webhook(
         )
     # POST method
     body = await request.body()
+
+    key = os.environ.get("WEBHOOK_SECRET")
+    if key is None:
+        return PlainTextResponse("No secret is configure!", status_code=401)
+
     is_genuine = verify_signature(
         message=body,
-        key=os.environ.get("WEBHOOK_SECRET").encode("utf8"),
+        key=key.encode("utf8"),
         signature=x_nylas_signature,
     )
     if not is_genuine:
         return PlainTextResponse("Signature verification failed!", status_code=401)
+
+    if event is None:
+        return PlainTextResponse("No event sent!", status_code=401)
 
     # Store the raw event JSON
     store_event_json(event)
